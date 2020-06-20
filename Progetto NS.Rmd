@@ -1,0 +1,1386 @@
+---
+title: "Trump World"
+author: "Felipe Riva"
+date:
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, message=F, warning = F, fig.align='center')
+```
+
+## Introduzione
+
+Nessun presidente americano è mai entrato in carica con una gigantesca rete di imprese, investimenti e connessioni aziendali come quella accumulata da Donald J. Trump. La sua famiglia e i suoi consulenti hanno toccato un numero incredibile di imprese, da un hotel in Azerbaigian a una società di poker a Las Vegas.
+
+John Templon, Anthony Cormier, Alex Campbell e Jeremy Singer-Vine hanno creato un dataset da registri pubblici, notizie e altre fonti sulla famiglia Trump.
+
+Il dataset è formato da persone e organizzazioni legate al 45° Presidente degli Stati Uniti, Donald J Trump.
+
+Queste persone e organizzazioni formano una rete della quale sono i nodi e gli archi sono associazioni tra queste. 
+
+Ogni riga del dataset rappresenta una connessione o tra una persona e una organizzazione o tra una persona ed un'altra persona oppure tra due organizzazioni.
+
+Il dataset si può scaricare dal sito: [ICON](https://icon.colorado.edu/#!/)
+
+Le informazioni sui creatori e l'articolo in cui viene citato il dataset si trovano qui: [BuzzFeedNews Trump World](https://www.buzzfeednews.com/article/johntemplon/help-us-map-trumpworld)
+
+In seguito cercherò di ricavare qualche informazione da questa rete di associazioni.
+
+***
+
+## Read Dataset
+
+```{r}
+library(readr)
+
+TrumpWorld = read_csv("TrumpWorld.csv")
+
+TrumpWorld
+```
+
+```{r}
+library(dplyr)
+edges = TrumpWorld%>%
+  select(`Entity A`, `Entity B`, Connection)%>%
+  rename(from = 'Entity A', to = 'Entity B')
+edges
+```
+
+```{r}
+library(igraph)
+library(tidyverse)
+g = graph_from_data_frame(edges, directed = FALSE, vertices = NULL)
+```
+
+```{r}
+nodes = as.tibble(igraph::as_data_frame(g, what = "vertices"))
+
+entity_a = TrumpWorld%>%
+  select(`Entity A`, `Entity A Type`)
+  
+entity_b = TrumpWorld%>%
+  select(`Entity B`, `Entity B Type`)
+
+entity_a = distinct(left_join(nodes, entity_a, by = c("name" = "Entity A")), name, `Entity A Type`)
+entity_b = distinct(left_join(nodes, entity_b, by = c("name" = "Entity B")), name, `Entity B Type`)
+
+nodes = left_join(entity_a, entity_b)%>%
+  rename(type_a = `Entity A Type`, type_b = `Entity B Type`)%>%
+  mutate(tipo = if_else(!is.na(type_a), type_a, type_b), id = row_number())%>%
+  select(id, name, tipo)
+nodes
+```
+
+
+```{r}
+library(tidygraph)
+library(ggraph)
+
+trump_graph = tbl_graph(nodes = nodes, edges = edges, directed = FALSE)
+
+trump_graph
+```
+
+## Analyse and Visualize network
+
+```{r}
+#visualize trump_graph
+
+ggraph(trump_graph, layout = 'lgl')+
+  geom_edge_link(alpha=0.2)+
+  geom_node_point(alpha=1, size = 0.6, color= "green")
+```
+
+Osserviamo la rete differenziando per colore i nodi in base alla variabile **tipo**.
+
+```{r}
+ggraph(trump_graph, layout = 'lgl')+
+  geom_edge_link(alpha=0.1)+
+  geom_node_point(aes(color=tipo), alpha=1, size=1)
+```
+
+Si nota dalla visualizzazione della rete che molti nodi sono organizzazioni e persone, e pochi nodi sono agenzie federali.
+
+Calcoliamo quanti sono in percentuale le organizzazioni, le persone e le agenzie federali.
+
+```{r}
+ties = as.list(trump_graph)$edges
+vertices = as.list(trump_graph)$nodes
+
+vertices%>%
+  group_by(tipo)%>%
+  summarise(n = n())%>%
+  mutate(percentage = round(n / sum(n), 3))
+```
+
+La maggior parte dei nodi sono organizzazioni.
+
+Facciamo lo stesso per i legami.
+
+```{r}
+ties%>%
+  group_by(Connection)%>%
+  summarise(n = n())%>%
+  mutate(percentage = n / sum(n))%>%
+  arrange(desc(percentage))
+```
+
+Notiamo che ci sono più di 800 tipologie di legami e che quelli più ricorrenti sono President, Ownership e Director.
+
+Quanti sono i legami tra due organizzazioni, tra due persone e tra organizzazione e persona?
+
+```{r}
+# tolgo i nodi che sono agenzie federali
+withoutFA = vertices%>%
+  filter(tipo != "Federal Agency")
+
+ties%>%
+  left_join(withoutFA, by = c("from" = "id"))%>%
+  left_join(withoutFA, by = c("to" = "id"))%>%
+  select(from, to, tipo.x, tipo.y)%>%
+  # tolgo le righe con valori NA che erano legami delle agenzie federali
+  filter(!is.na(tipo.x), !is.na(tipo.y))%>%
+  mutate(org_org = if_else(tipo.x == "Organization" & tipo.y == "Organization", TRUE, FALSE),
+         pers_pers = if_else(tipo.x == "Person" & tipo.y == "Person", TRUE, FALSE),
+         org_pers = if_else((tipo.x == "Person" & tipo.y == "Organization") | (tipo.x == "Organization" & 
+                                                                               tipo.y == "Person"), T, F))%>%
+  group_by(org_org, pers_pers, org_pers)%>%
+  summarise(n = n())
+```
+
+Con quale tipo di nodi Donald Trump ha più collegamenti?
+
+```{r}
+edges%>%
+  filter((from=="DONALD J. TRUMP")|(to=="DONALD J. TRUMP"))%>%
+  mutate(name= ifelse(from=="DONALD J. TRUMP", to, ifelse(to=="DONALD J. TRUMP", from, NA)))%>%
+  select(name)%>%
+  inner_join(nodes)%>%
+  group_by(tipo)%>%
+  summarise(n = n())
+```
+Donald Trump è collegato con 574 organizzazioni e 183 persone.
+
+Che tipo di collegamento ha con le organizzazioni?
+
+```{r}
+edges%>%
+  filter((from=="DONALD J. TRUMP")|(to=="DONALD J. TRUMP"))%>%
+  mutate(name= ifelse(from=="DONALD J. TRUMP", to, ifelse(to=="DONALD J. TRUMP", from, NA)))%>%
+  inner_join(nodes, by = c("name" = "name"))%>%
+  select(name, tipo, Connection)%>%
+  filter(tipo=="Organization")%>%
+  group_by(Connection)%>%
+  summarise(n = n())%>%
+  arrange(desc(n))
+```
+
+Trump ha con 473 organizzazioni, delle 574 con cui è collegato, un collegamento di tipo President, cioè ne è il presidente.
+
+Che tipo di collegamento ha con le persone?
+
+```{r}
+edges%>%
+  filter((from=="DONALD J. TRUMP")|(to=="DONALD J. TRUMP"))%>%
+  mutate(name= ifelse(from=="DONALD J. TRUMP", to, ifelse(to=="DONALD J. TRUMP", from, NA)))%>%
+  inner_join(nodes, by = c("name" = "name"))%>%
+  select(name, tipo, Connection)%>%
+  filter(tipo=="Person")%>%
+  group_by(Connection)%>%
+  summarise(n = n())%>%
+  arrange(desc(n))
+```
+
+Quali sono le 473 organizzazioni delle quali Trump è presidente?
+
+```{r}
+president_org=edges%>%
+  filter((from=="DONALD J. TRUMP")|(to=="DONALD J. TRUMP"))%>%
+  mutate(name= ifelse(from=="DONALD J. TRUMP", to, ifelse(to=="DONALD J. TRUMP", from, NA)))%>%
+  inner_join(nodes, by = c("name" = "name"))%>%
+  select(name, tipo, Connection)%>%
+  filter(tipo=="Organization")%>%
+  filter(Connection=="President (as of 2016 FEC filing)")
+president_org
+```
+
+Tracciamo il grafo con solo le connesioni delle organizzazioni delle quali Trump è presidente.
+
+```{r}
+# collegamenti in cui in from ci sono le organizzazioni di trump
+president_org_from=president_org%>%
+  select(name)%>%
+  left_join(edges, by=c("name"="from"))%>%
+  filter(!is.na(to))%>%
+  rename(from=name)%>%
+  select(-Connection)
+
+# collegamenti in cui in to ci sono le organizzazioni di trump
+president_org_to=president_org%>%
+  select(name)%>%
+  left_join(edges, by=c("name"="to"))%>%
+  filter(!is.na(from))%>%
+  rename(to=name)%>%
+  select(from, to)
+
+# unisco i due dataframe
+pres_org_connections = rbind(president_org_from, president_org_to)
+
+G = graph_from_data_frame(pres_org_connections, directed = F)
+
+ggraph(G, layout = "lgl")+
+  geom_edge_link(alpha=0.1)+
+  geom_node_point(size=1, color="red")
+```
+
+***
+
+## Misure di Centralità
+
+Quali sono i nodi più centrali/importanti nella rete?
+
+Iniziamo col visualizzare i nodi con la degree centrality più alta.
+
+```{r}
+ggraph(trump_graph, layout = "lgl")+
+  geom_edge_link(alpha = 0.1)+
+  geom_node_point(aes(fill=centrality_degree(), size = centrality_degree()), 
+                  show.legend=FALSE, alpha = 0.5, shape=21)+
+  geom_node_text(aes(filter = centrality_degree() > 50, label = name,
+                     size= centrality_degree()), family="serif", fontface= "bold", show.legend = FALSE)+
+  scale_fill_continuous(low = "blue", high= "red")
+```
+
+Visualizziamo anche i nodi con la closeness centrality più bassa, cioè quei nodi che stanno nella zona periferica della rete.
+
+```{r}
+ggraph(trump_graph, layout = "lgl")+
+  geom_edge_link(alpha = 0.1)+
+  geom_node_point(aes(fill=centrality_closeness(), size = centrality_closeness()), 
+                  show.legend=FALSE, alpha = 0.5, shape=21)+
+  geom_node_text(aes(filter = centrality_closeness() < 0.00006, label = name,
+                     size= centrality_closeness()), family="serif", fontface= "bold", 
+                 show.legend = FALSE)+
+  scale_fill_continuous(low = "blue", high= "red")
+```
+
+Calcoliamo la degree, betweenness, closeness e PageRank centrality per analizzare quali sono e di che tipo sono i nodi più centrali.
+
+```{r}
+centralities = trump_graph%>%
+  activate(nodes)%>%
+  mutate(degree = centrality_degree(),
+         betweenness = centrality_betweenness(),
+         closeness = centrality_closeness(),
+         pagerank = centrality_pagerank())
+
+as.list(centralities)$nodes%>%
+  arrange(desc(degree))%>%
+  head(5)
+```
+
+```{r}
+as.list(centralities)$nodes%>%
+  arrange(desc(betweenness))%>%
+  head(5)
+```
+
+```{r}
+as.list(centralities)$nodes%>%
+  arrange(desc(closeness))%>%
+  head(5)
+  
+```
+
+```{r}
+as.list(centralities)$nodes%>%
+  arrange(desc(pagerank))%>%
+  head(5)
+```
+
+Notiamo che i nodi che ricorrono più spesso nelle top 5 delle quattro misure di centralità, escludendo Trump, sono:
+
++ WILBUR ROSS
++ STEVEN MNUCHIN
++ JARED KUSHNER
++ MAR-A-LAGO CLUB, INC
++ THRIVE CAPITAL
+
+e sono tre persone ed due organizzazioni.
+
+Che tipo di legame c'è (se c'è) tra Trump e queste persone/organizzazioni?
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "WILBUR ROSS"))|((from == "WILBUR ROSS")&(to == "DONALD J. TRUMP")))
+```
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "STEVEN MNUCHIN"))|((from == "STEVEN MNUCHIN")&(to == "DONALD J. TRUMP")))
+```
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "JARED KUSHNER"))|((from == "JARED KUSHNER")&(to == "DONALD J. TRUMP")))
+```
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "MAR-A-LAGO CLUB, INC"))|((from == "MAR-A-LAGO CLUB, INC")&(to == "DONALD J. TRUMP")))
+```
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "THRIVE CAPITAL"))|((from == "THRIVE CAPITAL")&(to == "DONALD J. TRUMP")))
+```
+
+Donald Trump non è collegato direttamente all'organizzazione Thrive Capital.
+
+Qual'è la tipologia dei nodi che hanno le misure di centralità più elevate?
+
+```{r}
+as.list(centralities)$nodes%>%
+  group_by(tipo)%>%
+  summarise(avg_degree = mean(degree),
+            avg_bet = mean(betweenness),
+            avg_clo = mean(closeness),
+            avg_pr = mean(pagerank))
+```
+
+Notiamo che i nodi di tipo Person sono quelli con le misure di centralità più alte.
+
+
+Esiste correlazione tra le quattro misure di centralità?
+
+```{r}
+measures = as.list(centralities)$nodes
+
+M = cbind(degree=measures$degree,
+          betweenness = measures$betweenness,
+          closeness = measures$closeness,
+          pagerank = measures$pagerank)
+corM = cor(M, method = "pearson")
+corM
+```
+
+```{r}
+corrplot::corrplot.mixed(corM, lower="ellipse", upper = "circle")
+```
+
+La degree centrality e la pagerank centrality hanno un elevata correlazione positiva, cioè i valori delle due misure sono quasi perfettamente allineati su una retta con pendenza positiva. Quindi quando una cresce, cresce anche l'altra.
+
+```{r}
+plot(measures$degree, measures$pagerank, type="b", xlab = "Degree", ylab = "PageRank")
+```
+
+Invece la betweenness centrality e la closeness centrality hanno una bassa (vicino a zero) correlazione.
+
+```{r}
+plot(measures$closeness, measures$betweenness, type="p", xlab = "Closeness", ylab="Betweenness")
+```
+
+***
+
+## Power Measures
+
+Analizziamo il potere dei nodi della rete e confrontiamo tale misura di potere con la misura di centralità PageRank Centrality.
+
+In una rete di scambi in cui nei collegamenti si trasferiscono elementi di valore come tempo, denaro, energia o informazioni, la misura di potere dei nodi indica quanto un nodo sia collegato da nodi non potenti. Se un nodo è potente significa che è collegato da molti altri nodi che hanno pochi nodi vicini (opzioni).
+
+```{r}
+library(igraph)
+library(lpSolve)
+
+# per trovare il vettore del potere dobbiamo prima accertarci che il grafo sia regolabile ed in caso lo sia,  calcolare il vettore dei pesi di ciascun arco che fan si che il grafo sia regolabile ovvero quando tutti i vertici hanno lo stesso weighted degree
+
+#INPUT :
+# g : il grafo
+#OUTPUT:
+# w : il vettore con i pesi degli archi
+# d : il grado di regolarizzazione
+
+regularify = function(g){
+  n = vcount(g)
+  m = ecount(g)
+  E = get.edges(g, E(g))
+  B = matrix(0, nrow = n, ncol = m)
+  # matrice di incidenza B
+  for (i in 1:m) {
+    B[E[i,1], i] = 1
+    B[E[i,2], i] = 1
+  }  
+  
+  obj = rep(0, m + 1)
+  
+  con = cbind(B, rep(-1, n))
+  
+  dir = rep("=", n)
+  
+  rhs = -degree(g)
+  
+  sol = lp("max", obj, con, dir, rhs)
+  
+  if (sol$status == 0) {
+    s = sol$solution
+    
+    w = s[1:m] + 1
+    
+    d = s[m+1]
+  }
+  
+  if(sol$status == 0){
+    return(list(weights = w, degree = d))
+  }else{
+    return(NULL)
+  }
+}
+
+# se il grafo è regolabile calcoliamo il vettore del potere con il metodo iterativo
+#INPUT
+# A : matrice di adiacenza del grafo
+# t: precisione
+#OUTPUT
+# vector : power vector
+# iter : numero di iterazioni
+
+power = function(A, t) {
+  n = dim(A)[1];
+  
+  x0 = rep(0, n);
+  
+  x1 = rep(1, n);
+  
+  x2 = rep(1, n);
+  diff = 1
+  eps = 1/10^t;
+  iter = 0;
+  while (diff > eps) {
+    x0 = x1;
+    x1 = x2;
+    x2 = (1/x2) %*% A;
+    diff = sum(abs(x2 - x0));
+    iter = iter + 1;
+  } 
+  
+  alpha = ((1/x2) %*% A[,1]) / x2[1];
+  
+  x2 = sqrt(alpha) %*% x2;
+  return(list(vector = as.vector(x2), iter = iter))
+}  
+
+```
+
+
+Calcoliamo le misure di potere e di centralità.
+
+```{r}
+from = edges[, "from"]
+to = edges[, "to"]
+el = cbind(from, to)
+g = graph_from_data_frame(el, directed = FALSE)
+regularify(g)
+```
+
+Il grafo non è regolabile. Dobbiamo perturbare la sua matrice di adiacenza.
+
+```{r}
+A = as_adjacency_matrix(g, sparse = F)
+n = vcount(g)
+I = diag(0.15, n)
+AI = A + I
+
+# calcolo il power vector
+p = power(AI, 2)$vector # impiega qualche minuto (dai 10 ai 15 min)
+names = nodes$name
+names(p) = names
+
+#Calcolo la PageRank Centrality
+c = page_rank(g, damping=0.85, personalized = rep(1, vcount(g)))$vector
+```
+
+Confronto il potere e la centralità.
+
+```{r}
+# ordino i primi 10 nodi in base alla centralità
+round(sort(c, decreasing = TRUE)[1:10], 3)
+```
+
+```{r}
+# ordino i primi 10 nodi in base al potere
+round(sort(p, decreasing = T)[1:10], 3)
+```
+
+```{r}
+# ordino gli ultimi 10 nodi in base alla centralità
+round(sort(c, decreasing = F)[1:10], 6)
+```
+
+```{r}
+# ordino gli ultimi 10 nodi in base al potere
+round(sort(p, decreasing = F)[1:10], 3)
+```
+
+Si nota che che sia in base alla centralità che in base al potere i primi 10 nodi sono esattamente gli stessi, mentre che per gli ultimi 10 nodi sono completamente diversi.
+
+Esiste correlazione tra le due misure?
+
+```{r}
+cor(c, p, method="pearson")
+```
+
+```{r}
+color= rgb(0,0,0,0.5) # nero con opacità 0.5
+plot(c, p, xlab="Centrality", pch=NA, ylab="Power", bty="L")
+text(c, p, labels = names, cex=0.5, col=color)
+```
+
+Si, le due misure sono correlate!
+
+Tracciamo il grafo con la dimensione dei nodi in base al potere per osservare i 5 nodi con il potere più alto che si smarcano da tutti gli altri.
+
+```{r}
+plot(g, layout = layout_with_lgl(g), vertex.size=p/50, vertex.color="red", vertex.label=NA, edge.color="mediumorchid")
+```
+
+***
+
+## Similarity
+
+Analizzare la somiglianza tra i nodi può essere molto utile nell'ambito del **link prediction**, ovvero prevedere le nuove connessioni di un nodo in base alle connessioni dei nodi simili.
+
+Quindi trovando i nodi simili a **Donald Trump** si può sapere:
+
+1. Quali sono i nodi che hanno molti vicini in comune con Donald Trump.
+
+2. Prevedere quali saranno le nuove connessioni di Donald Trump.
+
+Quali sono i nodi simili a Donald Trump?
+
+```{r}
+# ci sono due misure per quantificare la somiglianza tra i nodi, la somiglianza del coseno e la somiglianza con il coefficiente di correlazione di Pearson. Definiamo una funzione che calcola entrambe le misure
+
+similarity = function(g, type = "cosine", mode = "col" ) {
+  A = as_adjacency_matrix(g, sparse = FALSE)
+  if (mode == "row") {A = t(A)}
+  if (type == "cosine") {
+    euclidean = function(x) {sqrt(x %*% x)}
+    d = apply(A, 2, euclidean)
+    D = diag(1/d)
+    S = D %*% t(A) %*% A %*% D
+  }
+  if (type == "pearson") {
+    S = cor(A, method = "pearson")
+  }
+  return(S)
+}
+
+library(tidyverse)
+
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+
+S = similarity(g, type = "cosine") 
+
+# annullo la diagonale principale di S poichè sono i valori di autosomiglianza
+S = S + diag(-1, nrow(S))
+
+# creo un grafo dalla matrice S in cui gli archi hanno peso uguale alla somiglianza dei nodi che collegano
+h = graph_from_adjacency_matrix(S, mode="undirected", weighted = TRUE)
+
+sigma = as.tibble(igraph::as_data_frame(h, what = "edges"))%>%
+  rename(x = from, y =to, similarity = weight)%>%
+  mutate(x = as.integer(x), y = as.integer(y))%>%
+  left_join(nodes, by=c("x"="id"))%>%
+  left_join(nodes, by=c("y"="id"))%>%
+  select(-tipo.x, -tipo.y)
+# i nodi con la somiglianza più alta sono:
+head(arrange(sigma, -similarity))
+```
+
+I nodi più simili a Donald Trump sono:
+
+```{r}
+head(arrange(filter(sigma, (name.x=="DONALD J. TRUMP")|(name.y=="DONALD J. TRUMP")), -similarity))
+```
+
++ DJT HOLDINGS LLC
++ DONALD J. TRUMP FOR PRESIDENT, INC.
++ ERIC TRUMP
++ TTTT VENTURE LLC
++ DONALD TRUMP JR.
++ ALLEN WEISSELBERG
+
+Ora che conosciamo i nodi più simili a Trump, cerchiamo di prevedere quali potranno essere le sue nuove connessioni.
+
+Seleziono i vicini dei 5 nodi più simili a Donald Trump.
+
+```{r}
+top_5 = sigma%>%
+  filter((name.x=="DONALD J. TRUMP")|(name.y=="DONALD J. TRUMP"))%>%
+  arrange(desc(similarity))%>%
+  select(name.x, name.y)%>%
+  head(5)
+
+top_5 = stack(top_5)%>%
+  select(values)%>%
+  filter(values != "DONALD J. TRUMP")%>%
+  rename(name = values)
+
+neighbors_1= top_5%>%
+  left_join(edges, by=c("name" = "from"))
+
+neighbors_2 = top_5%>%
+  left_join(edges, by=c("name" = "to"))
+
+top_neighbors = c(neighbors_1$to, neighbors_2$from)
+
+top_neighbors = unique(top_neighbors)
+```
+
+Seleziono i vicini di Donald Trump.
+
+```{r}
+trump_neighbors = edges%>%
+  filter((from == "DONALD J. TRUMP")|(to == "DONALD J. TRUMP"))
+
+trump_neighbors = unique(c(trump_neighbors$from, trump_neighbors$to))
+
+# rimuovo Trump dal vettore dei vicini di Trump
+trump_neighbors = trump_neighbors[-2]
+```
+
+Ora abbiamo i vicini dei 5 nodi più simili a Donald Trump e i vicini di Donald Trump.
+
+Selezioniamo (se ci sono) i nodi che sono i vicini dei 5 nodi più simili a Trump e che **non** sono vicini di Trump.
+
+```{r}
+trump_neighbors = data.frame(trump_neighbors)
+top_neighbors = data.frame(top_neighbors)
+
+diff_neighbors = top_neighbors%>%
+  anti_join(trump_neighbors, by = c("top_neighbors" = "trump_neighbors"))%>%
+  #tolgo Trump dal data frame poichè è amico di qualche suo nodo simile
+  filter(top_neighbors != "DONALD J. TRUMP")%>%
+  rename(diff_neighbors = top_neighbors)
+diff_neighbors
+```
+
+Di questi 32 nodi quali sono quelli con il grado più elevato?
+
+```{r}
+library(tidygraph)
+trump_graph = tbl_graph(nodes = nodes, edges = edges, directed = FALSE)
+
+degree = trump_graph%>%
+  activate(nodes)%>%
+  mutate(degree = centrality_degree())
+
+degree = as.list(degree)$nodes%>%
+  select(-tipo)%>%
+  arrange(desc(degree))%>%
+  inner_join(diff_neighbors, by = c("name" = "diff_neighbors"))%>%
+  head(5)
+degree
+```
+
+Questi nodi sono i vicini dei 5 nodi più simili a Trump ma che non sono vicini di Trump con il grado più alto. 
+Seguendo il ragionamento dei recommender systems questi nodi sono quelli da consigliare a Trump per far si che si colleghi ad essi, e sono anche i più probabili nuovi collegamenti che Trump farà.
+
+***
+
+## Community Detection
+
+Eseguiamo 3 algoritmi per il rilevamento di comunità sulla rete Trump World e scegliamo l'algortimo che dà la modularità maggiore.
+
+Gli algoritmi che eseguiamo sono:
+
+* **cluster_walktrap()** : L'idea è che si seguano cammini casuali sul grafo. Poiché per definizione di comunità ci sono pochi archi che conducono al di fuori di una determinata comunità, quindi è probabile che seguendo cammini casuali si rimanga all'interno di una comunità.
+
+* **cluster_edge_betweenness()** : Trova gli archi che collegano le diverse comunità. Se si individuano questi archi e si rimuovono dal grafo, si rimane soltanto con le comunità isolate. 
+
+* **cluster_fast_greedy()** : Inizia considerando ogni nodo del grafo come un gruppo a se stante, successivamente i gruppi si fondono scegliendo ad ogni passo il nodo o gruppo di nodi la cui fusione da il maggior incremento di modularità o la più piccola diminuzione se nessuna scelta dà incremento. Alla fine tutti i nodi saranno riuniti in un'unica grande comunità e l'algoritmo termina. Quindi tornando indietro negli stati attraversati dalla rete nel corso dello svolgimento dell'algoritmo si seleziona lo stato che dà il maggior valore di modularità.
+
+```{r}
+library(igraph)
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+
+rnd_walks = cluster_walktrap(g)
+edge_bet = cluster_edge_betweenness(g)
+fast_greedy = cluster_fast_greedy(g)
+
+modularity(rnd_walks)
+```
+
+```{r}
+modularity(edge_bet)
+```
+
+```{r}
+modularity(fast_greedy)
+```
+
+L'algoritmo che dà la modularità maggiore è cluster_fast_greedy(), perciò analizziamo le comunità individuate da questo.
+
+```{r}
+# numero di comunità
+length(fast_greedy)
+```
+
+```{r}
+# dimensioni delle comunità
+sizes(fast_greedy)
+```
+
+```{r}
+# dimensione della comunità più grande
+max(sizes(fast_greedy))
+```
+
+```{r}
+# qual'è la comunità con la dimensione più grande?
+sizes(fast_greedy)[which.max(sizes(fast_greedy))]
+```
+
+```{r}
+# qual'è la comunità più piccola?
+sizes(fast_greedy)[which.min(sizes(fast_greedy))]
+```
+
+
+```{r}
+# membership dei nodi
+membership(fast_greedy)[1:10]
+```
+
+Tracciamo la rete con le comunità.
+
+```{r}
+plot(fast_greedy, g, layout = layout_with_lgl(g), vertex.label=NA, vertex.size=3)
+```
+
+Chi sono i membri della comunità più grande?
+
+```{r}
+library(tidyverse)
+
+largest_community = as.tibble(data.frame(V(g)[which(membership(fast_greedy)==6)]$name))%>%
+  rename(name = V.g..which.membership.fast_greedy.....6...name)
+
+
+largest_community
+```
+
+Di questa comunità chi sono i nodi più importanti?
+
+```{r}
+as.list(centralities)$nodes%>%
+  inner_join(largest_community)%>%
+  arrange(desc(pagerank))%>%
+  select(-betweenness, -closeness)%>%
+  head(5)
+```
+
+Osserviamo che Donald Trump fa parte della comunità più grande ed è anche il nodo più importante di questa.
+
+***
+
+## Hierarchical Clustering
+
+Un'altro metodo per raggruppare i nodi della rete è il **clustering gerarchico**, in cui bisogna definire una misura di dissomiglianza o di distanza tra i nodi. Inizialmente tutti i nodi formano un singolo gruppo di un nodo, dopo di che passo dopo passo si fondono in gruppi (cluster) sempre più grandi in base alle dissomiglianze/distanze più piccole tra i nodi fino a che si arriva ad avere un unico grande cluster che contiene tutti i nodi.
+
+I passi del processo di clustering gerarchico vengono rappresentati in un **dendrogramma** con il quale è facile capire come si fondono i nodi della rete.
+
+Vediamo come vengono raggruppati i nodi con il clustering gerarchico.
+
+```{r}
+# misura di dissomiglianza è 1 - S (dove S è la matrice delle somiglianze tra i nodi)
+# distance matrix
+D = 1 - S
+
+# distanze tra i nodi 
+d = as.dist(D)
+
+#clusterig gerarchico con metodo average-link
+hc = hclust(d, method = "average")
+
+# dendrogramma
+ggraph(hc, layout="dendrogram")+
+  geom_edge_diagonal()
+```
+
+
+```{r}
+# tagliamo il dendrogramma in diverse altezze
+clusters_ = cutree(hc, k = 2:(vcount(g)/2))
+# calcoliamo la modularità per ciascuna partizione
+m = apply(clusters_, 2, FUN = function(x) {modularity(g, x)})
+# tracciamo le modularità delle partizioni
+plot(m, xlab = "number of communities", ylab = "modularity", type = "b")
+```
+
+Partizionando i nodi in quanti clusters si ottiene la modularità maggiore?
+
+```{r}
+# la partizione in clusters che da la maggiore modularità é in:
+which.max(m)
+```
+
+Tracciamo la rete nello stato in cui ci sono 149 clusters, che è lo stato del processo di clustering gerarchico che da la modularità maggiore.
+
+```{r}
+library(ggraph)
+clusters = as.factor(cutree(hc, k=149))
+
+ggraph(g, layout="lgl")+
+  geom_edge_link(alpha=0.1)+
+  geom_node_point(aes(color=clusters), alpha = 1, show.legend = F)
+```
+
+notiamo che anche partizionando i nodi in 149 clusters la maggior parte dei nodi sono raggruppati in un unico grande cluster.
+
+```{r}
+sigma%>%
+  arrange(desc(similarity))
+```
+
+Infatti notiamo che tra molti nodi esiste una somiglianza pari a 1 quindi la dissomiglianza, utilizzata come distanza in base alla quale i nodi si fondono nei cluster, per molti nodi è nulla. Quindi tutti questi nodi con somiglianza a 1 formano subito un grande cluster.
+
+***
+
+## Connectivity
+
+Verifichiamo se la rete è una componente connessa, cioè se per ogni coppia di nodi esiste tra loro la relazione di equivalenza.
+
+* Tra due nodi c'è una relazione di equivalenza se tra i due valgono le seguenti realzioni:
+
+1. Riflessiva : for each $v \in V,  vRv$
+2. Simmetrica : for each $a,b \in V,  aRb \to bRa$
+3. Transitiva : for each $a,b,c \in V$, $aRb$ & $bRc \to aRc$
+
+In altre parole se per ogni coppia di nodi di una partizione (sottografo), esiste almeno un cammino che li collega allora la partizione è una componente connessa. L'intero grafo può essere una componente connessa.
+
+```{r}
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+c = components(g)
+c$no 
+c$csize
+```
+
+Esiste solo una componente composta da tutti i 2669 nodi, quindi la rete è una componente connessa.
+
+Analizziamo se ci sono **k-componenti** cioè sottoinsiemi di nodi in cui per ogni coppia di nodi esistono almeno k cammini **nodo-indipendenti**, cioè cammini che non hanno nessun nodo in comune aparte i nodi alle estremità dei cammini.
+
+Una k-componente per definizione ha almeno k cammini nodo-indipendenti per ciascuna coppia di nodi, quindi per ciascuna coppia di nodi della k-componente esistono anche k-1 cammini nodo-indipendenti.
+
+Quindi per $k\ge2$, una k-componente è nidificata in una (k-1)-componente.
+
+Esiste una gerarchia tra le componenti nidificate, si parte dalle k-componenti con k più elevato (le foglie) e si risale fino ad arrivare alla componente più grande (la radice).
+
+Per sconnettere una k-componente bisogna togliere da essa almeno k nodi.
+
+Le k-componenti sono quindi un'indice di coesione e di connettività.
+
+Quali sono i nodi che formano le componenti più coese?
+
+```{r}
+# k-components gerarchia 
+b = cohesive_blocks(g)
+
+# nodi delle componenti
+bn = blocks(b)
+
+# grafi delle componenti
+bg = graphs_from_cohesive_blocks(b, g)
+
+# tracciamo il grafo della componente più coesa cioè quella con k più elevato
+co = cohesion(b)
+h = bg[[which.max(co)]]
+plot(h, layout=layout_with_lgl(h), vertex.size=50, vertex.color="limegreen", edge.color="orange", edge.width=3, vertex.label.cex=0.7)
+```
+
+Sappiamo che è una 5-componente quindi per sconnetterla bisogna rimuovere 5 nodi lasciando un solo nodo sconnesso.
+
+Quali sono i nodi appartenenti a questa 5-componente?
+
+```{r}
+five_comp = data.frame(V(h)$name)%>%
+  rename(name = V.h..name)%>%
+  inner_join(nodes)
+  
+five_comp
+```
+
+Questi 6 nodi formano la componente più coesa. Le coppie di queste organizzazioni hanno almeno 5 cammini nodo-indipendenti che le collegano quindi hanno un'elevata connettività.
+
+
+Sappiamo da b = cohesive_blocks(g) che c'è un'altra 5-componente formata anch'essa da 6 nodi, la B-314.
+
+```{r}
+k = bg[[314]]
+plot(k, layout=layout_with_lgl(k), vertex.size=50, vertex.color="red", edge.color="black", edge.width=3,
+     vertex.label.cex=1)
+```
+
+```{r}
+five_comp1 = data.frame(V(k)$name)%>%
+  rename(name = V.k..name)%>%
+  inner_join(nodes)
+
+five_comp1
+```
+
+***
+
+## Percolation
+
+Il processo di percolazione sulle reti consiste nel rimuovere alcuni nodi dalla rete con l'obiettivo di comprendere in che modo la rimozione dei nodi influenza la rete.
+
+Proviamo a togliere dalla rete i 5 nodi con il grado più alto.
+
+```{r}
+as.list(centralities)$nodes%>%
+  arrange(desc(degree))%>%
+  select(-betweenness, -closeness, - pagerank)%>%
+  head(5)
+```
+
+```{r}
+d = degree(g)
+names(d) = 1:length(d)
+d = sort(d, decreasing = T)
+del = as.integer(names(d[1:5]))
+g2 = delete_vertices(g, del)
+
+ggraph(g2, layout = "lgl")+
+  geom_edge_link(alpha=0.1)+
+  geom_node_point(color="royalblue")
+```
+
+Osserviamo che la rete senza i 5 nodi con grado più alto risulta essere molto sparsa e molto meno connessa.
+
+La rete senza i 5 nodi con grado più alto è ancora una componente connessa?
+
+```{r}
+c = components(g2)
+c$no
+```
+
+No, vediamo che la rete non è più una componente, infatti si formano ben 802 componenti diverse.
+
+Analizziamo come decresce la dimensione della componente più grande (gigante) facendo la percolazione con le varie strategie di rimozione dei nodi.
+
+```{r}
+#INPUT:
+# g: grafo
+# size : numero di nodi da rimuovere
+# d : vettore con i nodi da rimuovere
+#OUTPUT:
+# giant : vettore con le dimensioni delle componenti giganti dopo ogni rimozione
+
+percolate = function(g, size, d){
+  
+  giant = vector()
+  
+  #dimensione della componente iniziale
+  c = components(g)
+  giant[1] = max(c$csize)
+  
+  names(d) = 1:length(d)
+  d = sort(d, decreasing = TRUE)
+  vital = as.integer(names(d[1:size]))
+  
+  for(i in 1:size){
+    c = components(delete_vertices(g, vital[1:i]))
+    giant[i+1] = max(c$csize)
+  }
+  return(giant)
+}
+
+# resilienza (numero di nodi da rimuovere)
+size = vcount(g)/2
+
+# tolgo nodi a random
+rand = percolate(g, size = size, d = sample(V(g), size))
+
+# tolgo i nodi con grado più alto
+deg = percolate(g, size = size, d = degree(g))
+
+# tolgo i nodi con la betweenness centrality più alta
+bet = percolate(g, size = size, d = betweenness(g))
+
+# tolgo i nodi con la pagerank centrality più alta
+pr = percolate(g, size = size, d = page_rank(g)$vector)
+
+plot(0:size, rand, type = "l", col = 1, xlab = "Numero di nodi rimossi", ylab = "Dimensione della componente gigante")
+lines(0:size, deg, col=2)
+lines(0:size, bet, col=3)
+lines(0:size, pr, col=4)
+lines(0:size, rep(size, size+1), lty=2)
+legend(x = "topright", legend = c("rand", "deg", "bet", "pr"), lty = 1, col=1:4, cex = 1)
+```
+
+Vediamo che togliendo nodi a caso la dimensione della componente gigante decresce lentamente. Bisogna rimuovere centinaia di nodi per far si che la dimensione della componente gigante sia più piccola della metà dei nodi della rete.
+
+Invece, togliendo i nodi con le misure di centralità più alte la dimesione della componente gigante decresce molto rapidamente, basta rimuovere qualche nodo per far si che la dimensione della componente gigante sia più piccola della metà dei nodi della rete, e rimuovendo qualche decina di nodi la dimensione della componente gigante arriva vicino a 1.
+
+Perciò rimuovendo pochi nodi con centralità elevata la rete cade a pezzi.
+
+***
+
+## Analisi di alcune proprietà delle reti
+
+## Assortativity
+
+Le persone hanno una forte tendenza ad associarsi con persone che percepiscono siano simili a se stessi.
+
+Questa tendenza è chiamata **omofilia** o **mescolanza assortativa**.
+
+Più raramente incontriamo la tendenza delle persone ad associarsi con altre persone che non sono simili a loro, questa tendenza è chiamata **eterofilia** o **mescolanza disassortativa**.
+
+Una rete è assortativa quando gran parte dei legami è tra nodi dello stesso tipo o tra nodi con caratteristiche simili.
+
+Calcoliamo la assortatività della rete con la modularità poiché i nodi appartengono a tre categorie diverse (caratteristiche enumerative) che sono: Person, Organization e Federal Agency.
+
+```{r}
+#creo un vettore che assegna i nodi alle rispettive categorie
+library(igraph)
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+
+membership = nodes%>%
+  mutate(category = ifelse(tipo == "Organization", 1, ifelse(tipo == "Person", 2, ifelse(tipo=="Federal Agency", 3, NA))))
+
+membership = membership$category
+
+V(g)$category = membership
+mem = V(g)$category
+names(mem) = V(g)$name
+
+# calcolo la modularità
+modularity(g, membership = mem)
+```
+
+La assortività della rete è negativa quindi tra i nodi dello stesso tipo ci sono meno archi di quelli attesi dunque la rete è disassortativa, ovvero la maggior parte degli archi è tra nodi di tipo differente, quindi tra persone e organizzazioni.
+
+Misuriamo anche la assortatività in base al grado dei nodi.
+
+Il grado dei nodi è una caratteristica scalare, quindi la assortatività in base al grado va misurata con il coefficiente di correlazione di pearson tra le variabili L ed R.
+
+In L ci sono i gradi dei nodi che sono le estremità degli archi from, to.
+
+In R ci sono i gradi dei nodi che sono le estremità degli archi to, from.
+
+La rete sarà assortativa se i nodi di alto grado sono maggiormente collegati con altri nodi di alto grado, e i nodi di grado basso con altri nodi di basso grado.
+
+```{r}
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+
+d = degree(g)
+
+edge = as_edgelist(g)
+
+l = c(edge[,1], edge[,2])
+
+r = c(edge[,2], edge[,1])
+
+dl = d[l]
+dr = d[r]
+
+# coef di correlazione di pearson
+cor(dl, dr, method = "pearson")
+```
+
+Risulta negativa quindi non è assortativa, è più disassortativa quindi ci sono più archi tra nodi con grado non simile.
+
+***
+
+## Small-World
+
+Controlliamo se sulla rete si verifica l'effetto piccolo mondo (Small-World), ovvero se la distanza geodesica più frequente è sorprendentemente breve, soprattutto se confrontata con il numero di nodi della rete. 
+
+La distanza media rispecchia questo valore basso se non ci sono distanze anomale cioè distanze molto lunghe.
+
+```{r}
+g = graph_from_data_frame(edges, directed = FALSE, vertices = nodes$name)
+
+# numero di nodi della rete
+vcount(g)
+```
+
+
+```{r}
+# distanza media
+mean_distance(g)
+```
+
+
+```{r}
+# diametro (distanza più lunga)
+diameter(g)
+```
+
+```{r}
+# frequenze degli shortest paths con le varie lunghezze (distanze)
+distance_table(g)
+```
+
+```{r}
+paths = distance_table(g)$res
+
+names(paths) = 1:length(paths)
+
+barplot(paths/sum(paths), xlab="Distanze", ylab="Frequenza")
+abline(v = mean_distance(g), col = "red", lwd = 3, lty = 1)
+```
+
+Osserviamo che la distanza media rispecchia il valore delle distanze più frequenti, ed è un valore molto basso soprattutto se confrontato ai 2669 nodi della rete. Quindi è una rete con l'effetto piccolo mondo.
+
+***
+
+## Degree Distribution
+
+```{r}
+d = degree(g)
+hist(d, breaks = 30)
+```
+
+```{r}
+d = degree(g)
+z = degree_distribution(g)
+plot(1:max(d), z[2:length(z)], type = "l", xlab="Grado", ylab="Frazione")
+```
+
+
+* Power Law :
+
+$$P_k = Ck^{-\alpha}$$
+
+Dove $k\ge0$, $P_k$ è la frazione dei nodi di grado $k$, $C$ è una costante e $\alpha$ è l'esponente della Power Law ed è $2\le\alpha\le3$
+
+Se si fa il logaritmo in etrambi i membri si ottiene:
+
+$$\log P_k = -\alpha \log k + \log C$$
+
+che equivale all'equazione della retta in forma esplicita $y = mx + q$, quindi $-\alpha$ è la pendenza della retta e $\log C$ è il punto di intersezione della retta con l'asse delle ordinate. 
+
+Quindi $P_k = Ck^{-\alpha}$ in scala log-log è una retta con pendenza negativa.
+
+Per verificare se una distribuzione dei gradi segue una Power Law controlliamo che il grafico della funzione delle frazioni dei nodi di grado k al variare di $k\ge0$ passato in scala log-log sia una retta.
+
+Un'altro metodo per verificare se una distribuzione segue la Power Law è tracciare la funzione di distribuzione cumulativa (CCDF) su scala log-log.
+
+* CCDF :
+
+$$P_k = \sum_{x=k}^{\infty} P_x$$
+
+dove $P_k$ è la frazione dei nodi che hanno grado $k$ o grado superiore.
+
+Se $P_k = Ck^{-\alpha}$ e $\alpha> 1$, allora :
+
+$$P_k = \sum_{x=k}^{\infty} P_x = C \sum_{x=k}^{\infty} x^{-\alpha} \sim= \frac{C}{\alpha - 1} k^{-(\alpha - 1)}$$
+
+si ha quindi :
+
+$$P_k \sim \frac{C}{\alpha - 1} k^{-(\alpha - 1)}$$
+
+anche questa funzione se passata in scala log-log dovrebbe risulatare simile ad una retta.
+
+```{r}
+# Cumulative distribution
+ccdf = function(d) {
+  n = length(d)
+  max = max(d)
+  p = rep(0, max)
+  for (i in 1:length(p)) {
+    p[i] = length(d[d >= i]) / n
+  } 
+  return(p)
+}
+
+d = degree(g)
+
+p = ccdf(d)
+
+plot(1:max(d), p, type = "l", xlab="Degree", ylab="CCDF")
+```
+
+```{r}
+# in scala log-log
+plot(1:max(d), p, log="xy", type = "l", xlab="Degree", ylab="CCDF")
+```
+
+Quello che possiamo dire è che la rete ha una distribuzione dei gradi di tipo **long-tail**.
+
+Perciò nella rete la stra grande maggioranza dei nodi ha un grado basso e pochi nodi hanno grado notevolmente elevato; questi nodi sono detti **hub**. 
+
+Chi sono gli hub nella rete?
+
+```{r}
+d[d>100]
+```
+
+Sono solo 4 i nodi con grado maggiore a 100, questi nodi sono gli hub.
+
+***
+
+## Risultati dalle ricerche sul web
+
+Abbiamo trovato i nodi più centrali/importanti della rete, ovvero:
+
++ WILBUR ROSS
++ STEVEN MNUCHIN
++ JARED KUSHNER
++ MAR-A-LAGO CLUB, INC
++ THRIVE CAPITAL
+
+Chi sono queste persone e organizzazioni?
+
+* **WILBUR ROSS**
+
+Wilbur Louis Ross Jr. (Weehawken, 28 novembre 1937) è un politico statunitense, dal 2017 è il segretario al Commercio.
+
+*Legami con Donald Trump*: Nel 2016 decide di aderire ai repubblicani per sostenere la campagna elettorale di Donald Trump.
+
+A seguito della vittoria di Trump alle elezioni del 2016, Ross venne nominato da quest'ultimo come segretario al commercio e ottenne la carica il 27 febbraio 2017.
+
+Fonte: <https://it.wikipedia.org/wiki/Wilbur_Ross>
+
+* **STEVEN MNUCHIN**
+
+Steven Terner "Steve" Mnuchin (New York, 21 dicembre 1962) è un banchiere, produttore cinematografico e politico statunitense, 77º ed attuale Segretario al tesoro degli Stati Uniti d'America.
+
+*Legami con Donald Trump*: Mnuchin per anni ha donato ingenti somme di denaro per sostenere diverse campagne elettorali, sia di democratici che di repubblicani.
+
+Mnuchin è uno dei primi a sostenere Trump nelle primarie repubblicane, tanto da venir poi nominato da questi responsabile finanziario della sua campagna con Lewis Eisenberg. 
+
+Il 30 novembre 2016 Trump annuncia ufficialmente che Mnuchin sarebbe stato il suo Segretario al Tesoro.
+
+Fonte: <https://it.wikipedia.org/wiki/Steven_Mnuchin>
+
+* **JARED KUSHNER**
+
+Jared Kushner (Livingston, 10 gennaio 1981) è un imprenditore statunitense.
+
+*Legami con Donald Trump*: Il 25 ottobre 2009 ha sposato Ivanka Trump, figlia di Donald e Ivana Trump, con cui ha tre figli.
+
+Il 20 gennaio 2017 viene nominato assieme a Stephen Miller senior advisor del Presidente degli Stati Uniti d'America Donald Trump.
+
+Nel marzo 2017 Trump lo ha messo a capo del neo-istituito Office of American Innovation (OAI) della Casa Bianca.
+
+Fonte: <https://it.wikipedia.org/wiki/Jared_Kushner>
+
+* **MAR-A-LAGO CLUB, INC**
+
+Mar-a-Lago è un resort situato a Palm Beach, in Florida. 
+
+Il resort è stato costruito negli anni 1920 da Marjorie Merriweather Post come residenza invernale per i presidenti statunitensi.
+
+Questo resort contiene il Mar-a-Lago Club, un club riservato ai soli membri con camere, un centro benessere e altri servizi in stile hotel. 
+
+Il club conta quasi 500 soci paganti e ammette dai venti ai quaranta nuovi soci all'anno. I membri includono il dirigente petrolifero Bill Koch , il finanziere Thomas Peterffy , il leader del Partito Democratico del New Jersey George Norcross , il lobbista Kenneth Duberstein , gli sviluppatori immobiliari Bruce E. Toll e Richard LeFrak , il dirigente dei media Christopher Ruddy , conduttore di talk show Howie Carr e il coach della NFL Bill Belichick . 
+
+*Legami con Donald Trump*: Nel dicembre 1985 venne acquistato dall'imprenditore Donald Trump.
+
+Fonte: <https://en.wikipedia.org/wiki/Mar-a-Lago>
+
+* **THRIVE CAPITAL**
+
+Thrive Capital è una società di investimento di capitale di rischio focalizzata sugli investimenti in Internet e software.
+
+*Legami con Donald Trump*: Il fondatore e socio amministratore della società Thrive Capital è Joshua Kushner, fratello di Jared Kushner, che come abbiamo scoperto sopra, è il genero e consigliere senior di Donald Trump.
+
+Fonti: <https://www.thrivecap.com/> e <https://en.wikipedia.org/wiki/Joshua_Kushner>
+
+***
+
+Oltre ai nodi principali della rete abbiamo trovato anche quali potrebbero essere i futuri collegamenti di Trump facendo il **link-prediction**, questi nodi sono: 
+
++ THE ERIC TRUMP FOUNDATION	
++ ANNIE DONALDSON	
++ JAMES BURNHAM	
++ DEUTSCHE BANK	
++ TITAN ATLAS MANUFACTURING
+
+* **THE ERIC TRUMP FOUNDATION**
+
+È una organizzazione benefica il cui presidente e fondatore è Eric Trump, figlio di Donald Trump e la sua prima moglie Ivana Trump.
+
+Attualmente la fondazione ha interrotto la raccolta fondi per evitare l'affermazione di qualsiasi improprietà e/o un conflitto di interessi per via dell'auttuale carica di presidente degli Stati Uniti del padre del fondatore.
+
+Fonti: <https://www.erictrumpfoundation.com/> e <https://en.wikipedia.org/wiki/Eric_Trump>
+
+* **ANNIE DONALDSON**
+
+È una avvocatessa Americana. Donaldson è entrata alla Casa Bianca nel febbraio 2017, in qualità di vice consigliere del presidente Trump. 
+
+Ha lasciato l'incarico nel dicembre 2018.
+
+Fonte: <https://en.wikipedia.org/wiki/Annie_Donaldson>
+
+* **DEUTSCHE BANK**
+
+È una banca d'investimento multinazionale e una società di servizi finanziari con sede a Francoforte, in Germania.
+
+* **TITAN ATLAS MANUFACTURING**
+
+Titan Atlas Manufacturing, un'azienda specializzata in prodotti per l'edilizia, ha funzionato per appena due anni e ha chiuso nel 2012, lasciando una scia di fatture non pagate e tasse non pagate.
+
+***
+
+Abbiamo anche trovato le due componenti più coese della rete, la prima è composta da:
+
++ CHARLES KUSHNER		
++ DARA ORBACH			
++ JARED KUSHNER		
++ JOSHUA KUSHNER	
++ NICOLE KUSHNER MEYER		
++ SERYL CHARLES KUSHNER FAMILY FOUNDATION INC
+
+**Joshua e Jared Kushner** già li conosciamo. **Charles Kushner** è il loro padre ed è uno sviluppatore immobiliare fondatore della Kushner Companies.
+
+**Nicole Kushner Meyer** è sorella di Joshua e Jared e fa parte della Kushner Companies.
+
+**Dara Kushner Orbach** è sorella di Joshua e Jared.
+
+**Seryl Charles Kushner family foundation inc.**
+
+Charles Kushner, sua moglie Seryl e la sua famiglia trasferiscono la loro filantropia attraverso la Charles and Seryl Kushner Charitable Foundation.
+
+I Kushner sono forti sostenitori delle istituzioni ebraiche negli Stati Uniti e in Israele.
+
+Le aree di finanziamento sono: cause ebraiche, istruzione, salute e servizi umani.
+
+Fonte: <https://www.insidephilanthropy.com/real-estate-givers/charles-and-seryl-kushner>
+
+La seconda componente più coesa è composta da:
+
++ DONALD J. TRUMP			
++ DONALD TRUMP JR.		
++ ERIC TRUMP			
++ IVANKA TRUMP	
++ SLC TURNBERRY LIMITED			
++ NITTO WORLD CO. LIMITED
+
+I primi 4 sono Donald Trump e i suoi 3 figli avuti con la sua prima moglie Ivana Trump.
+
+**SLC TURNBERRY LIMITED** è una società di ospitalità con sede nel Regno Unito.
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "SLC TURNBERRY LIMITED"))|((from == "SLC TURNBERRY LIMITED")&(to == "DONALD J. TRUMP")))
+```
+
+Trump ne è il Chairman.
+
+**NITTO WORLD CO. LIMITED**
+
+Nitto World Co., Ltd è stata fondata nel 1987. La linea di business dell'azienda comprende la gestione di hotel e motel pubblici.
+
+```{r}
+edges%>%
+  filter(((from == "DONALD J. TRUMP")&(to == "NITTO WORLD CO. LIMITED"))|((from == "NITTO WORLD CO. LIMITED")&(to == "DONALD J. TRUMP")))
+```
+
+Trump ne è il direttore.
+
+## Fine
